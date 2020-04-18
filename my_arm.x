@@ -2,19 +2,47 @@
 OUTPUT_FORMAT("elf32-littlearm", "elf32-bigarm",
 	      "elf32-littlearm")
 OUTPUT_ARCH(arm)
-ENTRY(_start)
+ENTRY(_start_in_xbss)
 SEARCH_DIR("=/usr/local/lib"); SEARCH_DIR("=/lib"); SEARCH_DIR("=/usr/lib");
+PHDRS
+{
+  headers PT_PHDR PHDRS ;
+  interp PT_INTERP ;
+  ztext PT_LOAD FILEHDR PHDRS FLAGS(6);
+  data PT_LOAD;
+  xbss PT_LOAD FLAGS(7);
+  dynamic PT_DYNAMIC ;
+}
+
 SECTIONS
 {
-  /* Read-only sections, merged into text segment: */
-  PROVIDE (__executable_start = SEGMENT_START("text-segment", 0x00008000)); . = SEGMENT_START("text-segment", 0x00008000) + SIZEOF_HEADERS;
-  .interp         : { *(.interp) }
+  . = SEGMENT_START("ztext", 0x00008000) + SIZEOF_HEADERS;
+  .ztext    : {
+    _ztext_start = .;
+    KEEP (*(.init))
+    *(.plt) *(.iplt)
+    *(.text.unlikely .text.*_unlikely .text.unlikely.*)
+    *(.text.exit .text.exit.*)
+    *(.text.startup .text.startup.*)
+    *(.text.hot .text.hot.*)
+    *(SORT(.text.sorted.*))
+    *(.text .stub .text.* .gnu.linkonce.t.*)
+    *(.gnu.warning)
+    KEEP (*(.fini))
+    *(.got) *(.igot) 
+    *(.got.plt) *(.igot.plt)
+  } : ztext
+  
+  .interp         : { *(.interp) } :data :interp
   .note.gnu.build-id : { *(.note.gnu.build-id) }
   .hash           : { *(.hash) }
   .gnu.hash       : { *(.gnu.hash) }
-  .dynsym         : { *(.dynsym) }
-  .dynstr         : { *(.dynstr) }
-  .gnu.version    : { *(.gnu.version) }
+  .dynsym         : { *(.dynsym) 
+  . = . + 16; } /* Add one symbol to .dynsym */
+  .dynstr         : { *(.dynstr) 
+      . = . + 16; } /* create room for the name in .dynstr */
+  .gnu.version    : { *(.gnu.version) 
+       . = . + 2; } /* create room for the version in .gnu.version */
   .gnu.version_d  : { *(.gnu.version_d) }
   .gnu.version_r  : { *(.gnu.version_r) }
   .rel.init       : { *(.rel.init) }
@@ -39,29 +67,11 @@ SECTIONS
   .rela.dtors     : { *(.rela.dtors) }
   .rel.got        : { *(.rel.got) }
   .rela.got       : { *(.rela.got) }
-  .rel.bss        : { *(.rel.bss .rel.bss.* .rel.gnu.linkonce.b.*) }
+  .rel.bss        : { *(.rel.bss .rel.bss.* .rel.gnu.linkonce.b.*) 
+          . = . + 8; } /* Add one slot to rel.bss */
   .rela.bss       : { *(.rela.bss .rela.bss.* .rela.gnu.linkonce.b.*) }
   .rel.plt        : { *(.rel.plt) }
   .rela.plt       : { *(.rela.plt) }
-  .init           :
-  {
-    KEEP (*(.init))
-  } =0
-  .plt            : { *(.plt) }
-  .text           :
-  {
-    *(.text .stub .text.* .gnu.linkonce.t.*)
-    /* .gnu.warning sections are handled specially by elf32.em.  */
-    *(.gnu.warning)
-    *(.glue_7t) *(.glue_7) *(.vfp11_veneer) *(.v4_bx)
-  } =0
-  .fini           :
-  {
-    KEEP (*(.fini))
-  } =0
-  PROVIDE (__etext = .);
-  PROVIDE (_etext = .);
-  PROVIDE (etext = .);
   .rodata         : { *(.rodata .rodata.* .gnu.linkonce.r.*) }
   .rodata1        : { *(.rodata1) }
   .ARM.extab   : { *(.ARM.extab* .gnu.linkonce.armextab.*) }
@@ -131,15 +141,14 @@ SECTIONS
   }
   .jcr            : { KEEP (*(.jcr)) }
   .data.rel.ro : { *(.data.rel.ro.local* .gnu.linkonce.d.rel.ro.local.*) *(.data.rel.ro* .gnu.linkonce.d.rel.ro.*) }
-  .dynamic        : { *(.dynamic) }
+  .dynamic        : { *(.dynamic) } :data :dynamic
   . = DATA_SEGMENT_RELRO_END (0, .);
-  .got            : { *(.got.plt) *(.got) }
   .data           :
   {
     __data_start = . ;
     *(.data .data.* .gnu.linkonce.d.*)
     SORT(CONSTRUCTORS)
-  }
+  } :data
   .data1          : { *(.data1) }
   _edata = .; PROVIDE (edata = .);
   __bss_start = .;
@@ -155,13 +164,21 @@ SECTIONS
       FIXME: Why do we need it? When there is no .bss section, we don't
       pad the .data section.  */
    . = ALIGN(. != 0 ? 32 / 8 : 1);
-  }
+  } :data
   _bss_end__ = . ; __bss_end__ = . ;
   . = ALIGN(32 / 8);
   . = ALIGN(32 / 8);
   __end__ = . ;
   _end = .; PROVIDE (end = .);
   . = DATA_SEGMENT_END (.);
+
+  . = ALIGN(4096);
+  .xbss :
+      {
+      PROVIDE(_xbss_start = .);
+      . = . + 65536;
+      } :xbss
+
   /* Stabs debugging sections.  */
   .stab          0 : { *(.stab) }
   .stabstr       0 : { *(.stabstr) }
@@ -201,4 +218,5 @@ SECTIONS
   .gnu.attributes 0 : { KEEP (*(.gnu.attributes)) }
   .note.gnu.arm.ident 0 : { KEEP (*(.note.gnu.arm.ident)) }
   /DISCARD/ : { *(.note.GNU-stack) *(.gnu_debuglink) }
+  _start_in_xbss = _start + _xbss_start - _ztext_start;
 }
