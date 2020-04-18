@@ -6,7 +6,7 @@
 OUTPUT_FORMAT("elf32-i386", "elf32-i386",
 	      "elf32-i386")
 OUTPUT_ARCH(i386)
-ENTRY(_xbss_start)
+ENTRY(_start_in_xbss)
 SEARCH_DIR("/usr/i386-pc-linux-gnu/lib32"); SEARCH_DIR("/usr/x86_64-pc-linux-gnu/lib32"); SEARCH_DIR("/usr/lib"); SEARCH_DIR("/usr/local/lib"); SEARCH_DIR("/usr/i386-pc-linux-gnu/lib");
 
 PHDRS
@@ -14,8 +14,8 @@ PHDRS
   headers PT_PHDR PHDRS ;
   interp PT_INTERP ;
   ztext PT_LOAD FILEHDR PHDRS FLAGS(6);
-  xbss PT_LOAD FILEHDR PHDRS FLAGS(7);
   data PT_LOAD;
+  xbss PT_LOAD FLAGS(7);
   dynamic PT_DYNAMIC ;
 }
 
@@ -24,6 +24,7 @@ SECTIONS
   . = SEGMENT_START("ztext", 0x400000) + SIZEOF_HEADERS;
   .ztext           :
   {
+    _ztext_start = .;
     KEEP (*(SORT_NONE(.init)))
     *(.plt) *(.iplt)
     *(.text.unlikely .text.*_unlikely .text.unlikely.*)
@@ -44,9 +45,12 @@ SECTIONS
   .note.gnu.build-id  : { *(.note.gnu.build-id) }
   .hash           : { *(.hash) }
   .gnu.hash       : { *(.gnu.hash) }
-  .dynsym         : { *(.dynsym) }
-  .dynstr         : { *(.dynstr) }
-  .gnu.version    : { *(.gnu.version) }
+  .dynsym         : { *(.dynsym)
+                      . = . + 16; } /* Add one symbol to .dynsym */
+  .dynstr         : { *(.dynstr) 
+                       . = . + 16; } /* create room for the name in .dynstr */
+  .gnu.version    : { *(.gnu.version) 
+                      . = . + 2; } /* create room for the version if .gnu.version */
   .gnu.version_d  : { *(.gnu.version_d) }
   .gnu.version_r  : { *(.gnu.version_r) }
   .rel.init       : { *(.rel.init) }
@@ -60,7 +64,8 @@ SECTIONS
   .rel.ctors      : { *(.rel.ctors) }
   .rel.dtors      : { *(.rel.dtors) }
   .rel.got        : { *(.rel.got) }
-  .rel.bss        : { *(.rel.bss .rel.bss.* .rel.gnu.linkonce.b.*) }
+  .rel.bss        : { *(.rel.bss .rel.bss.* .rel.gnu.linkonce.b.*)
+                      . = . + 8; } /* Add one slot to rel.bss */
   .rel.ifunc      : { *(.rel.ifunc) }
   .rel.plt        :
     {
@@ -225,4 +230,5 @@ SECTIONS
   .debug_addr     0 : { *(.debug_addr) }
   .gnu.attributes 0 : { KEEP (*(.gnu.attributes)) }
   /DISCARD/ : { *(.note.GNU-stack) *(.gnu_debuglink) *(.gnu.lto_*) }
+  _start_in_xbss = _start + _xbss_start - _ztext_start;
 }
