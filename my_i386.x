@@ -6,13 +6,41 @@
 OUTPUT_FORMAT("elf32-i386", "elf32-i386",
 	      "elf32-i386")
 OUTPUT_ARCH(i386)
-ENTRY(_start)
+ENTRY(_xbss_start)
 SEARCH_DIR("/usr/i386-pc-linux-gnu/lib32"); SEARCH_DIR("/usr/x86_64-pc-linux-gnu/lib32"); SEARCH_DIR("/usr/lib"); SEARCH_DIR("/usr/local/lib"); SEARCH_DIR("/usr/i386-pc-linux-gnu/lib");
+
+PHDRS
+{
+  headers PT_PHDR PHDRS ;
+  interp PT_INTERP ;
+  ztext PT_LOAD FILEHDR PHDRS FLAGS(6);
+  xbss PT_LOAD FILEHDR PHDRS FLAGS(7);
+  data PT_LOAD;
+  dynamic PT_DYNAMIC ;
+}
+
 SECTIONS
 {
-  /* Read-only sections, merged into text segment: */
-  PROVIDE (__executable_start = SEGMENT_START("text-segment", 0x08048000)); . = SEGMENT_START("text-segment", 0x08048000) + SIZEOF_HEADERS;
-  .interp         : { *(.interp) }
+  . = SEGMENT_START("ztext", 0x400000) + SIZEOF_HEADERS;
+  .ztext           :
+  {
+    KEEP (*(SORT_NONE(.init)))
+    *(.plt) *(.iplt)
+    *(.text.unlikely .text.*_unlikely .text.unlikely.*)
+    *(.text.exit .text.exit.*)
+    *(.text.startup .text.startup.*)
+    *(.text.hot .text.hot.*)
+    *(SORT(.text.sorted.*))
+    *(.text .stub .text.* .gnu.linkonce.t.*)
+    *(.gnu.warning)
+    KEEP (*(SORT_NONE(.fini)))
+  } : ztext
+  PROVIDE (__etext = .);
+  PROVIDE (_etext = .);
+  PROVIDE (etext = .);
+
+  .interp         : { *(.interp) } :data :interp
+
   .note.gnu.build-id  : { *(.note.gnu.build-id) }
   .hash           : { *(.hash) }
   .gnu.hash       : { *(.gnu.hash) }
@@ -41,31 +69,8 @@ SECTIONS
       *(.rel.iplt)
       PROVIDE_HIDDEN (__rel_iplt_end = .);
     }
-  .init           :
-  {
-    KEEP (*(SORT_NONE(.init)))
-  }
-  .plt            : { *(.plt) *(.iplt) }
 .plt.got        : { *(.plt.got) }
 .plt.sec        : { *(.plt.sec) }
-  .text           :
-  {
-    *(.text.unlikely .text.*_unlikely .text.unlikely.*)
-    *(.text.exit .text.exit.*)
-    *(.text.startup .text.startup.*)
-    *(.text.hot .text.hot.*)
-    *(SORT(.text.sorted.*))
-    *(.text .stub .text.* .gnu.linkonce.t.*)
-    /* .gnu.warning sections are handled specially by elf.em.  */
-    *(.gnu.warning)
-  }
-  .fini           :
-  {
-    KEEP (*(SORT_NONE(.fini)))
-  }
-  PROVIDE (__etext = .);
-  PROVIDE (_etext = .);
-  PROVIDE (etext = .);
   .rodata         : { *(.rodata .rodata.* .gnu.linkonce.r.*) }
   .rodata1        : { *(.rodata1) }
   .eh_frame_hdr   : { *(.eh_frame_hdr) *(.eh_frame_entry .eh_frame_entry.*) }
@@ -140,7 +145,7 @@ SECTIONS
   }
   .jcr            : { KEEP (*(.jcr)) }
   .data.rel.ro : { *(.data.rel.ro.local* .gnu.linkonce.d.rel.ro.local.*) *(.data.rel.ro .data.rel.ro.* .gnu.linkonce.d.rel.ro.*) }
-  .dynamic        : { *(.dynamic) }
+  .dynamic        : { *(.dynamic) } :data :dynamic
   .got            : { *(.got) *(.igot) }
   . = DATA_SEGMENT_RELRO_END (SIZEOF (.got.plt) >= 12 ? 12 : 0, .);
   .got.plt        : { *(.got.plt) *(.igot.plt) }
@@ -148,7 +153,7 @@ SECTIONS
   {
     *(.data .data.* .gnu.linkonce.d.*)
     SORT(CONSTRUCTORS)
-  }
+  } :data
   .data1          : { *(.data1) }
   _edata = .; PROVIDE (edata = .);
   . = .;
@@ -164,12 +169,20 @@ SECTIONS
       FIXME: Why do we need it? When there is no .bss section, we do not
       pad the .data section.  */
    . = ALIGN(. != 0 ? 32 / 8 : 1);
-  }
+  } :data
   . = ALIGN(32 / 8);
   . = SEGMENT_START("ldata-segment", .);
   . = ALIGN(32 / 8);
   _end = .; PROVIDE (end = .);
   . = DATA_SEGMENT_END (.);
+
+  . = ALIGN(4096);
+  .xbss :
+      {
+      PROVIDE(_xbss_start = .);
+      . = . + 65536;
+      } :xbss
+
   /* Stabs debugging sections.  */
   .stab          0 : { *(.stab) }
   .stabstr       0 : { *(.stabstr) }
