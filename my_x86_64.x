@@ -24,6 +24,7 @@ SECTIONS
   /* Read-only sections, merged into text segment: */
 
   . = SEGMENT_START("ztext", 0x400000) + SIZEOF_HEADERS;
+  _start_of_ztext = .;
   .ztext           :
   {
     KEEP (*(SORT_NONE(.init)))
