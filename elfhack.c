@@ -12,10 +12,9 @@
 Elf32_Shdr *ztextShdr = NULL;
 Elf32_Shdr *xbssShdr = NULL;
 Elf32_Shdr *relBssShdr = NULL;
-Elf32_Sym  *symtabZtextStart, *dynsymZtextStart;
-
+Elf32_Sym  *dynsymZtextStart, *symGotPlt;
 int ztext_start_symidx;
-int ztext_start_dynstroffset;
+int e_machine;
 
 int elf_is_valid(Elf32_Ehdr * elf_hdr)
 {
@@ -70,6 +69,8 @@ int print_elf_header(Elf32_Ehdr * elf_hdr)
 		printf("- Type: %04x\n", elf_hdr->e_type);
 
 	printf("- Version: %d\n", elf_hdr->e_version);
+    printf("- Machine: %d\n", elf_hdr->e_machine);
+    e_machine = elf_hdr->e_machine;
 	printf("- Entrypoint: 0x%08x\n", elf_hdr->e_entry);
 	printf("- Program header table offset: 0x%08x\n", elf_hdr->e_phoff);
 	printf("- Section header table offset: 0x%08x\n", elf_hdr->e_shoff);
@@ -117,7 +118,7 @@ void print_sym_type(uint8_t info)
 		printf("- Symbol type: %d\n", type);
 }
 
-int print_sym_table(uint8_t * filebase, Elf32_Shdr * section, char *strtable, int shndx)
+int print_sym_table(uint8_t * filebase, Elf32_Shdr * section, char *strtable)
 {
 	Elf32_Sym *symbols;
 	size_t sym_size = section->sh_entsize;
@@ -139,9 +140,14 @@ int print_sym_table(uint8_t * filebase, Elf32_Shdr * section, char *strtable, in
 	do {
 		printf("- Name index: %d\n", symbols->st_name);
 		printf("- Name: %s\n", strtable + symbols->st_name);
-        if (!strcmp(strtable + symbols->st_name, "_ztext_start")) {
-            // Found _ztext_start symbol in symtab, we need it in dynsym also
-            symtabZtextStart = symbols;
+        char *name = strtable + symbols->st_name;
+        if (!strcmp(name, "_GLOBAL_OFFSET_TABLE_")) {
+            // Found _GLOBAL_OFFSET_TABLE_ which is .got.plt, part of .ztext with my linker script.
+            // That one contains absolute pointers that need to be fixed up.
+            symGotPlt = symbols;
+        } else if (!strcmp(name, "_ztext_start") && section->sh_type == SHT_DYNSYM) {
+            dynsymZtextStart = symbols;
+            ztext_start_symidx = symbols - (Elf32_Sym *) (filebase + section->sh_offset);
         }
 		printf("- Value: 0x%08x\n", symbols->st_value);
 		printf("- Size: 0x%08x\n", symbols->st_size);
@@ -153,12 +159,6 @@ int print_sym_table(uint8_t * filebase, Elf32_Shdr * section, char *strtable, in
 		cur_size += sym_size;
 		symbols++;
 	} while (cur_size < section->sh_size);
-
-    if (section->sh_type == SHT_DYNSYM) {
-        symbols--; // last dummy symbol
-        dynsymZtextStart = symbols;
-        ztext_start_symidx = symbols - (Elf32_Sym *) (filebase + section->sh_offset);
-    }
 
 	return 1;
 }
@@ -228,11 +228,6 @@ int print_section_header(Elf32_Shdr *shdr, uint index, char *strtable, uint8_t *
     } else if (!strcmp(name, ".xbss")) {
         // Found .xbss
         xbssShdr = shdr;
-    } else if (!strcmp(name, ".dynstr")) {
-        printf("Adding \"_ztext_start\" to dynstr\n");
-        char *p = (char *)(p_base + shdr->sh_offset + shdr->sh_size - 16);
-        ztext_start_dynstroffset = shdr->sh_size - 16;
-        memcpy(p, "_ztext_start", strlen("_ztext_start"));
     } else if (!strcmp(name, ".gnu.version")) {
         printf("Setting version at end of .gnu.version\n");
         char *p = (char *)(p_base + shdr->sh_offset + shdr->sh_size - 2);
@@ -332,7 +327,7 @@ int main(int argc, char *argv[])
 						(char *)(p_base +
 							 p_shdr[p_shdr[i].
 								sh_link].
-							 sh_offset), i);
+							 sh_offset));
 			}
 		}
 	} else {
@@ -340,10 +335,9 @@ int main(int argc, char *argv[])
     }
    
     // Copy the _ztext_start symbol from .symtab to .dynsym    
-    printf("Creating dynsym _ztext_start symbol\n");
-    memcpy(dynsymZtextStart, symtabZtextStart, sizeof(Elf32_Sym));
+    // shouldn't be needed when linking with -E
+    printf("Updating dynsym _ztext_start symbol\n");
     dynsymZtextStart->st_info = ELF32_ST_INFO(STB_LOCAL, STT_OBJECT);
-    dynsymZtextStart->st_name = ztext_start_dynstroffset;
     dynsymZtextStart->st_size = ztextShdr->sh_size;
 
     if (relBssShdr) {
@@ -357,7 +351,11 @@ int main(int argc, char *argv[])
         int symtab_index = ELF32_R_SYM(rel->r_info);
 
         printf("Found reloc type %d symtab index %d\n", type, symtab_index);
-        type = R_386_COPY;
+        if (e_machine == EM_386) {
+            type = R_386_COPY;
+        } else if (e_machine == EM_ARM) {
+            type = R_ARM_COPY;
+        }
         symtab_index = ztext_start_symidx;
         rel->r_info = ELF32_R_INFO(symtab_index, type);
         rel->r_offset =  xbssShdr->sh_addr;

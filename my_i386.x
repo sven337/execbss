@@ -47,12 +47,9 @@ SECTIONS
   .note.gnu.build-id  : { *(.note.gnu.build-id) }
   .hash           : { *(.hash) }
   .gnu.hash       : { *(.gnu.hash) }
-  .dynsym         : { *(.dynsym)
-                      . = . + 16; } /* Add one symbol to .dynsym */
-  .dynstr         : { *(.dynstr) 
-                       . = . + 16; } /* create room for the name in .dynstr */
-  .gnu.version    : { *(.gnu.version) 
-                      . = . + 2; } /* create room for the version if .gnu.version */
+  .dynsym         : { *(.dynsym) }
+  .dynstr         : { *(.dynstr) }
+  .gnu.version    : { *(.gnu.version) } 
   .gnu.version_d  : { *(.gnu.version_d) }
   .gnu.version_r  : { *(.gnu.version_r) }
   .rel.init       : { *(.rel.init) }
