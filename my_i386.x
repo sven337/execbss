@@ -35,8 +35,6 @@ SECTIONS
     *(.text .stub .text.* .gnu.linkonce.t.*)
     *(.gnu.warning)
     KEEP (*(SORT_NONE(.fini)))
-    *(.got) *(.igot) 
-    *(.got.plt) *(.igot.plt)
   } : ztext
   PROVIDE (__etext = .);
   PROVIDE (_etext = .);
@@ -150,6 +148,9 @@ SECTIONS
   .jcr            : { KEEP (*(.jcr)) }
   .data.rel.ro : { *(.data.rel.ro.local* .gnu.linkonce.d.rel.ro.local.*) *(.data.rel.ro .data.rel.ro.* .gnu.linkonce.d.rel.ro.*) }
   .dynamic        : { *(.dynamic) } :data :dynamic
+  .got            : { *(.got) *(.igot) }
+  . = DATA_SEGMENT_RELRO_END (SIZEOF (.got.plt) >= 12 ? 12 : 0, .);
+  .got.plt        : { *(.got.plt) *(.igot.plt) }
   .data           :
   {
     *(.data .data.* .gnu.linkonce.d.*)
@@ -226,5 +227,5 @@ SECTIONS
   .debug_addr     0 : { *(.debug_addr) }
   .gnu.attributes 0 : { KEEP (*(.gnu.attributes)) }
   /DISCARD/ : { *(.note.GNU-stack) *(.gnu_debuglink) *(.gnu.lto_*) }
-  _start_in_xbss = _start + _xbss_start - _ztext_start;
+  _start_in_xbss = main + _xbss_start - _ztext_start;
 }

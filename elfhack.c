@@ -12,6 +12,7 @@
 Elf32_Shdr *ztextShdr = NULL;
 Elf32_Shdr *xbssShdr = NULL;
 Elf32_Shdr *relBssShdr = NULL;
+Elf32_Shdr *relZtextShdr = NULL;
 Elf32_Sym  *dynsymZtextStart, *symGotPlt;
 int ztext_start_symidx;
 int e_machine;
@@ -228,10 +229,8 @@ int print_section_header(Elf32_Shdr *shdr, uint index, char *strtable, uint8_t *
     } else if (!strcmp(name, ".xbss")) {
         // Found .xbss
         xbssShdr = shdr;
-    } else if (!strcmp(name, ".gnu.version")) {
-        printf("Setting version at end of .gnu.version\n");
-        char *p = (char *)(p_base + shdr->sh_offset + shdr->sh_size - 2);
-        *((uint16_t *)p) = 0;
+    } else if (!strcmp(name, ".rel.ztext")) {
+        relZtextShdr = shdr;
     }
 
 
@@ -328,19 +327,20 @@ int main(int argc, char *argv[])
 							 p_shdr[p_shdr[i].
 								sh_link].
 							 sh_offset));
-			}
+			} else if (p_shdr[i].sh_type == SHT_REL || p_shdr[i].sh_type == SHT_RELA) {
+                // Relocation section
+            }
 		}
 	} else {
 		printf("Invalid ELF file\n");
     }
    
-    // Copy the _ztext_start symbol from .symtab to .dynsym    
-    // shouldn't be needed when linking with -E
-    printf("Updating dynsym _ztext_start symbol\n");
+    printf("Updating dynsym _ztext_start symbol\n"); //update size and binding type
     dynsymZtextStart->st_info = ELF32_ST_INFO(STB_LOCAL, STT_OBJECT);
     dynsymZtextStart->st_size = ztextShdr->sh_size;
 
     if (relBssShdr) {
+        // Inject a COPY relocation of the ztext_start symbol to .xbss
         int sz = 0;
         // Point at the end of the section
         Elf32_Rel *rel = (Elf32_Rel *)(p_base + relBssShdr->sh_offset + relBssShdr->sh_size);
@@ -361,6 +361,52 @@ int main(int argc, char *argv[])
         rel->r_offset =  xbssShdr->sh_addr;
         printf("Now reloc type %d symtab index %d\n", type, symtab_index);
     }
+
+
+    if (relZtextShdr) {
+        // Fixup all GOT-involving relocations since the offset between code and GOT is about to change (- .ztext + .xbss)
+        int nb = relZtextShdr->sh_size / sizeof(Elf32_Rel);
+        Elf32_Rel *rel = (Elf32_Rel *)(p_base + relZtextShdr->sh_offset);
+        uint8_t *zTextPtr = (uint8_t *)(p_base + ztextShdr->sh_offset);
+        int32_t ztextToXbss = xbssShdr->sh_addr - ztextShdr->sh_addr;
+        for (int i = 0; i < nb; i++) {
+            int type = ELF32_R_TYPE(rel->r_info);
+            Elf32_Addr *fixup = (Elf32_Addr *)(zTextPtr + rel->r_offset - ztextShdr->sh_addr);
+
+//            https://docs.oracle.com/cd/E19120-01/open.solaris/819-0690/chapter6-26/index.html
+            switch (type) {
+                case R_386_PC32:
+                    // PC-relative  S + A - P 
+                    // if S is in .ztext, nothing changes
+                    // otherwise handle it..
+                    break;
+                case R_386_GOTPC:
+                    //  GOT + A - P 
+                    // P is moving by (.xbss - .ztext)
+                    printf("value %#x must be fixed\n", *fixup);
+                    *fixup -= ztextToXbss;
+                    printf("Fixed up %p which is at %p\n", rel->r_offset, (uint8_t*)fixup-p_base);
+                    break;
+                case R_386_GOTOFF:
+                    // S + A - GOT
+                    // Nothing to do
+                    break;
+                case R_386_PLT32:
+                    //  L + A - P  (L is .plt)
+                    // Nothing to do, both L and P move so it's fine
+                    break;
+                case R_386_GOT32X:
+                    // XXX
+                    break;
+                default:
+                    ;
+            };
+            //#define ELF32_R_SYM(val)        ((val) >> 8)
+            rel++;
+        }
+
+    }
+
 
     if (symGotPlt) {
         printf("Found _GLOBAL_OFFSET_TABLE_ value %#x size %d\n", symGotPlt->st_value);
