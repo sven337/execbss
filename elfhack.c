@@ -362,6 +362,25 @@ int main(int argc, char *argv[])
         printf("Now reloc type %d symtab index %d\n", type, symtab_index);
     }
 
+    if (symGotPlt) {
+        printf("Found _GLOBAL_OFFSET_TABLE_ value %#x size %d\n", symGotPlt->st_value);
+        int offset = symGotPlt->st_value - ztextShdr->sh_addr; // offset from start of section
+        Elf32_Addr *fixmeup = (Elf32_Addr *)(p_base + ztextShdr->sh_offset + offset);
+        fixmeup += 3;
+        // now I should be pointing at addresses
+        while (1) {
+            if (*fixmeup > ztextShdr->sh_addr && *fixmeup < (Elf32_Addr)(ztextShdr->sh_addr + ztextShdr->sh_size)) {
+                printf("Fixing up address %p to ", *fixmeup);
+                *fixmeup = *fixmeup - ztextShdr->sh_addr + xbssShdr->sh_addr;
+                printf("%p\n", *fixmeup);
+            } else {
+                break;
+            }
+            fixmeup ++;
+        }
+
+    }
+
     FILE *out = fopen("/tmp/out.elf", "w");
     fwrite(p_base, elf_stat.st_size, 1, out);
     fclose(out);
