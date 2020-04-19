@@ -9,10 +9,10 @@
 #include <elf.h>
 #include <unistd.h>
 
-Elf32_Shdr *ztextShdr = NULL;
-Elf32_Shdr *xbssShdr = NULL;
+Elf32_Shdr *ztextShdr, *xbssShdr, *gotShdr, *dynShdr = NULL;
 Elf32_Shdr *relBssShdr = NULL;
 Elf32_Shdr *relZtextShdr = NULL;
+Elf32_Shdr *relGotShdr, *relDynShdr = NULL;
 Elf32_Sym  *dynsymZtextStart, *symGotPlt;
 int ztext_start_symidx;
 int e_machine;
@@ -139,8 +139,8 @@ int print_sym_table(uint8_t * filebase, Elf32_Shdr * section, char *strtable)
 	symbols++;
 	cur_size += sym_size;
 	do {
-		printf("- Name index: %d\n", symbols->st_name);
-		printf("- Name: %s\n", strtable + symbols->st_name);
+		/*printf("- Name index: %d\n", symbols->st_name);
+		printf("- Name: %s\n", strtable + symbols->st_name);*/
         char *name = strtable + symbols->st_name;
         if (!strcmp(name, "_GLOBAL_OFFSET_TABLE_")) {
             // Found _GLOBAL_OFFSET_TABLE_ which is .got.plt, part of .ztext with my linker script.
@@ -150,13 +150,13 @@ int print_sym_table(uint8_t * filebase, Elf32_Shdr * section, char *strtable)
             dynsymZtextStart = symbols;
             ztext_start_symidx = symbols - (Elf32_Sym *) (filebase + section->sh_offset);
         }
-		printf("- Value: 0x%08x\n", symbols->st_value);
+/*		printf("- Value: 0x%08x\n", symbols->st_value);
 		printf("- Size: 0x%08x\n", symbols->st_size);
 
 		print_bind_type(symbols->st_info);
 		print_sym_type(symbols->st_info);
 
-		printf("- Section index: %d\n", symbols->st_shndx);
+		printf("- Section index: %d\n", symbols->st_shndx);*/
 		cur_size += sym_size;
 		symbols++;
 	} while (cur_size < section->sh_size);
@@ -231,8 +231,11 @@ int print_section_header(Elf32_Shdr *shdr, uint index, char *strtable, uint8_t *
         xbssShdr = shdr;
     } else if (!strcmp(name, ".rel.ztext")) {
         relZtextShdr = shdr;
+    } else if (!strcmp(name, ".rel.got")) {
+        relGotShdr = shdr;
+    } else if (!strcmp(name, ".got")) {
+        gotShdr = shdr;
     }
-
 
     if(shdr->sh_type <= 11)
         printf("\tType: %s\n", stypes[shdr->sh_type]);
@@ -249,6 +252,67 @@ int print_section_header(Elf32_Shdr *shdr, uint index, char *strtable, uint8_t *
 
 }
 
+int looks_like_code_address(Elf32_Addr addr)
+{
+    if (addr > ztextShdr->sh_addr && addr < (Elf32_Addr)(ztextShdr->sh_addr + ztextShdr->sh_size)) {
+        return 1;
+    }
+    return 0;
+}
+// Fix up relocation values for section s whose relocations are listed in relocs.
+// e.g. fixup_relocations_for_section(.rel.ztext, .ztext)
+void fixup_relocations_for_section(uint8_t *p_base, Elf32_Shdr *relocs, Elf32_Shdr *s, int32_t ztextToXbss, Elf32_Shdr *all_sections)
+{
+    int nb = relocs->sh_size / sizeof(Elf32_Rel);
+    Elf32_Rel *rel = (Elf32_Rel *)(p_base + relocs->sh_offset);
+    uint8_t *codePtr = (uint8_t *)(p_base + s->sh_offset);
+    Elf32_Sym *symbols = (Elf32_Sym *)(p_base + all_sections[relocs->sh_link].sh_offset);
+
+    for (int i = 0; i < nb; i++) {
+        int type = ELF32_R_TYPE(rel->r_info);
+        int symbol = ELF32_R_SYM(rel->r_info);
+        Elf32_Addr symval = symbols[symbol].st_value;
+        Elf32_Addr *fixup = (Elf32_Addr *)(codePtr + rel->r_offset - s->sh_addr);
+
+//            https://docs.oracle.com/cd/E19120-01/open.solaris/819-0690/chapter6-26/index.html
+        switch (type) {
+            case R_386_PC32:
+                // PC-relative  S + A - P 
+                // if S is in .ztext, nothing changes
+                // otherwise handle it..
+                break;
+            case R_386_GOTPC:
+                //  GOT + A - P 
+                // P is moving by (.xbss - .ztext)
+                printf("\tGOTPC reloc @%p %#x must be fixed\n", rel->r_offset);
+                *fixup -= ztextToXbss;
+                break;
+            case R_386_GOTOFF:
+                // S + A - GOT
+                if (looks_like_code_address(symval)) {
+                    printf("\tGOTOFF relocation @%p concerns code addr %p\n", rel->r_offset, symbols[symbol].st_value);
+                    *fixup += ztextToXbss;
+                }
+                break;
+            case R_386_PLT32:
+                //  L + A - P  (L is .plt)
+                // Nothing to do, both L and P move so it's fine
+                break;
+            case R_386_GOT32X:
+                // XXX
+                break;
+            case R_386_RELATIVE:
+                *fixup += ztextToXbss;
+                printf("\tRELATIVE reloc @%p fixed up\n", rel->r_offset);
+
+                break;
+            default:
+                ;
+        };
+        rel++;
+    }
+
+}
 int main(int argc, char *argv[])
 {
 	int fd_elf = -1;
@@ -314,21 +378,19 @@ int main(int argc, char *argv[])
 
 		for (i = 0; i < p_ehdr->e_shnum; i++) {
 			print_section_header(&p_shdr[i], i, p_strtable, p_base);
-			if (p_shdr[i].sh_type == SHT_SYMTAB
-			    || p_shdr[i].sh_type == SHT_DYNSYM) {
-				printf
-				    ("This section holds a symbol table...\n");
+            if (p_shdr[i].sh_type == SHT_SYMTAB
+                    || p_shdr[i].sh_type == SHT_DYNSYM) {
+                printf
+                    ("This section holds a symbol table...\n");
 
-				//being a symbol table, the field sh_link of the section header
-				//will hold an index into the section table which gives the
-				//section containing the string table
-				print_sym_table(p_base, &p_shdr[i],
-						(char *)(p_base +
-							 p_shdr[p_shdr[i].
-								sh_link].
-							 sh_offset));
-			} else if (p_shdr[i].sh_type == SHT_REL || p_shdr[i].sh_type == SHT_RELA) {
-                // Relocation section
+                //being a symbol table, the field sh_link of the section header
+                //will hold an index into the section table which gives the
+                //section containing the string table
+                print_sym_table(p_base, &p_shdr[i],
+                        (char *)(p_base +
+                            p_shdr[p_shdr[i].
+                            sh_link].
+                            sh_offset));
             }
 		}
 	} else {
@@ -362,61 +424,32 @@ int main(int argc, char *argv[])
         printf("Now reloc type %d symtab index %d\n", type, symtab_index);
     }
 
-
+    int32_t zTextToXbss = xbssShdr->sh_addr - ztextShdr->sh_addr;
     if (relZtextShdr) {
         // Fixup all GOT-involving relocations since the offset between code and GOT is about to change (- .ztext + .xbss)
-        int nb = relZtextShdr->sh_size / sizeof(Elf32_Rel);
-        Elf32_Rel *rel = (Elf32_Rel *)(p_base + relZtextShdr->sh_offset);
-        uint8_t *zTextPtr = (uint8_t *)(p_base + ztextShdr->sh_offset);
-        int32_t ztextToXbss = xbssShdr->sh_addr - ztextShdr->sh_addr;
-        for (int i = 0; i < nb; i++) {
-            int type = ELF32_R_TYPE(rel->r_info);
-            Elf32_Addr *fixup = (Elf32_Addr *)(zTextPtr + rel->r_offset - ztextShdr->sh_addr);
-
-//            https://docs.oracle.com/cd/E19120-01/open.solaris/819-0690/chapter6-26/index.html
-            switch (type) {
-                case R_386_PC32:
-                    // PC-relative  S + A - P 
-                    // if S is in .ztext, nothing changes
-                    // otherwise handle it..
-                    break;
-                case R_386_GOTPC:
-                    //  GOT + A - P 
-                    // P is moving by (.xbss - .ztext)
-                    printf("value %#x must be fixed\n", *fixup);
-                    *fixup -= ztextToXbss;
-                    printf("Fixed up %p which is at %p\n", rel->r_offset, (uint8_t*)fixup-p_base);
-                    break;
-                case R_386_GOTOFF:
-                    // S + A - GOT
-                    // Nothing to do
-                    break;
-                case R_386_PLT32:
-                    //  L + A - P  (L is .plt)
-                    // Nothing to do, both L and P move so it's fine
-                    break;
-                case R_386_GOT32X:
-                    // XXX
-                    break;
-                default:
-                    ;
-            };
-            //#define ELF32_R_SYM(val)        ((val) >> 8)
-            rel++;
-        }
-
+        printf("Fixing up relocations for .ztext from .rel.ztext\n");
+        fixup_relocations_for_section(p_base, relZtextShdr, ztextShdr, zTextToXbss, p_shdr);
     }
+
+    if (relGotShdr) {
+        // The GOT itself has addresses such as the address of main, fix it up
+        printf("Fixing up relocations for .got from .rel.got\n");
+        fixup_relocations_for_section(p_base, relGotShdr, gotShdr, zTextToXbss, p_shdr);
+    }
+
+    // XXX probably also need to do .rel.dyn, but not .rel.data
 
 
     if (symGotPlt) {
-        printf("Found _GLOBAL_OFFSET_TABLE_ value %#x size %d\n", symGotPlt->st_value);
+        // Fixup symbols in the PLT
+        printf("Found plt _GLOBAL_OFFSET_TABLE_ @%#x\n", symGotPlt->st_value);
         int offset = symGotPlt->st_value - ztextShdr->sh_addr; // offset from start of section
         Elf32_Addr *fixmeup = (Elf32_Addr *)(p_base + ztextShdr->sh_offset + offset);
         fixmeup += 3;
         // now I should be pointing at addresses
         while (1) {
-            if (*fixmeup > ztextShdr->sh_addr && *fixmeup < (Elf32_Addr)(ztextShdr->sh_addr + ztextShdr->sh_size)) {
-                printf("Fixing up address %p to ", *fixmeup);
+            if (looks_like_code_address(*fixmeup)) {
+                printf("Fixing up address at %p value %p to ", (uint8_t *)fixmeup - ztextShdr->sh_offset - p_base + ztextShdr->sh_addr, *fixmeup);
                 *fixmeup = *fixmeup - ztextShdr->sh_addr + xbssShdr->sh_addr;
                 printf("%p\n", *fixmeup);
             } else {
