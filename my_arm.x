@@ -17,6 +17,7 @@ PHDRS
 SECTIONS
 {
   . = SEGMENT_START("ztext", 0x00008000) + SIZEOF_HEADERS;
+  . = ALIGN(4096);
   .ztext    : {
     _ztext_start = .;
     KEEP (*(.init))
@@ -29,20 +30,18 @@ SECTIONS
     *(.text .stub .text.* .gnu.linkonce.t.*)
     *(.gnu.warning)
     KEEP (*(.fini))
-    *(.got) *(.igot) 
-    *(.got.plt) *(.igot.plt)
   } : ztext
-  
+  PROVIDE (__etext = .);
+  PROVIDE (_etext = .);
+  PROVIDE (etext = .);
+
   .interp         : { *(.interp) } :data :interp
   .note.gnu.build-id : { *(.note.gnu.build-id) }
   .hash           : { *(.hash) }
   .gnu.hash       : { *(.gnu.hash) }
-  .dynsym         : { *(.dynsym) 
-  . = . + 16; } /* Add one symbol to .dynsym */
-  .dynstr         : { *(.dynstr) 
-      . = . + 16; } /* create room for the name in .dynstr */
-  .gnu.version    : { *(.gnu.version) 
-       . = . + 2; } /* create room for the version in .gnu.version */
+  .dynsym         : { *(.dynsym) }
+  .dynstr         : { *(.dynstr) }
+  .gnu.version    : { *(.gnu.version) } 
   .gnu.version_d  : { *(.gnu.version_d) }
   .gnu.version_r  : { *(.gnu.version_r) }
   .rel.init       : { *(.rel.init) }
@@ -143,6 +142,7 @@ SECTIONS
   .data.rel.ro : { *(.data.rel.ro.local* .gnu.linkonce.d.rel.ro.local.*) *(.data.rel.ro* .gnu.linkonce.d.rel.ro.*) }
   .dynamic        : { *(.dynamic) } :data :dynamic
   . = DATA_SEGMENT_RELRO_END (0, .);
+  .got            : { *(.got.plt) *(.got) }
   .data           :
   {
     __data_start = . ;
@@ -218,5 +218,5 @@ SECTIONS
   .gnu.attributes 0 : { KEEP (*(.gnu.attributes)) }
   .note.gnu.arm.ident 0 : { KEEP (*(.note.gnu.arm.ident)) }
   /DISCARD/ : { *(.note.GNU-stack) *(.gnu_debuglink) }
-  _start_in_xbss = _start + _xbss_start - _ztext_start;
+  _start_in_xbss = main + _xbss_start - _ztext_start;
 }

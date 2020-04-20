@@ -16,6 +16,14 @@ Elf32_Shdr *relGotShdr, *relDynShdr = NULL;
 Elf32_Sym  *dynsymZtextStart, *symGotPlt;
 int ztext_start_symidx;
 int e_machine;
+            
+int RELOC_PC32;
+int RELOC_GOTPC;
+int RELOC_GOTOFF;
+int RELOC_PLT32;
+int RELOC_GOT32X;
+int RELOC_RELATIVE;
+int RELOC_COPY;
 
 int elf_is_valid(Elf32_Ehdr * elf_hdr)
 {
@@ -72,6 +80,26 @@ int print_elf_header(Elf32_Ehdr * elf_hdr)
 	printf("- Version: %d\n", elf_hdr->e_version);
     printf("- Machine: %d\n", elf_hdr->e_machine);
     e_machine = elf_hdr->e_machine;
+    if (e_machine == EM_386) {
+        RELOC_PC32 = R_386_PC32;
+        RELOC_GOTPC = R_386_GOTPC;
+        RELOC_GOTOFF = R_386_GOTOFF;
+        RELOC_PLT32 = R_386_PLT32;
+        RELOC_GOT32X = R_386_GOT32X;
+        RELOC_RELATIVE = R_386_RELATIVE;
+        RELOC_COPY = R_386_COPY;
+    } else if (e_machine == EM_ARM) {
+        RELOC_PC32 = R_ARM_REL32;
+        RELOC_GOTPC = R_ARM_GOTPC;
+        RELOC_GOTOFF = R_ARM_GOTOFF;
+        RELOC_PLT32 = R_ARM_PLT32;
+        RELOC_GOT32X = 0;
+        RELOC_RELATIVE = R_ARM_RELATIVE;
+        RELOC_COPY = R_ARM_COPY;
+    } else {
+        fprintf(stderr, "Unsupported ELF machine type %d\n", e_machine);
+        exit(1);
+    }
 	printf("- Entrypoint: 0x%08x\n", elf_hdr->e_entry);
 	printf("- Program header table offset: 0x%08x\n", elf_hdr->e_phoff);
 	printf("- Section header table offset: 0x%08x\n", elf_hdr->e_shoff);
@@ -275,40 +303,74 @@ void fixup_relocations_for_section(uint8_t *p_base, Elf32_Shdr *relocs, Elf32_Sh
         Elf32_Addr *fixup = (Elf32_Addr *)(codePtr + rel->r_offset - s->sh_addr);
 
 //            https://docs.oracle.com/cd/E19120-01/open.solaris/819-0690/chapter6-26/index.html
-        switch (type) {
-            case R_386_PC32:
-                // PC-relative  S + A - P 
-                // if S is in .ztext, nothing changes
-                // otherwise handle it..
-                break;
-            case R_386_GOTPC:
-                //  GOT + A - P 
-                // P is moving by (.xbss - .ztext)
-                printf("\tGOTPC reloc @%p %#x must be fixed\n", rel->r_offset);
-                *fixup -= ztextToXbss;
-                break;
-            case R_386_GOTOFF:
-                // S + A - GOT
+        if (type == RELOC_PC32) {
+        } else if (type == RELOC_PC32) {
+            // PC-relative  S + A - P 
+            // if S is in .ztext, nothing changes
+            // otherwise handle it..
+        } else if (type == RELOC_GOTPC && e_machine == EM_386) {
+            //  GOT + A - P 
+            // P is moving by (.xbss - .ztext)
+            printf("\tGOTPC reloc @%p %#x must be fixed\n", rel->r_offset);
+            *fixup -= ztextToXbss;
+        } else if (type == RELOC_GOTOFF) {
+            // S + A - GOT
+            if (looks_like_code_address(symval)) {
+                printf("\tGOTOFF relocation @%p concerns code addr %p\n", rel->r_offset, symbols[symbol].st_value);
+                *fixup += ztextToXbss;
+            }
+        } else if (type == RELOC_PLT32) {
+            //  L + A - P  (L is .plt)
+            // Nothing to do, both L and P move so it's fine
+        } else if (type == RELOC_GOT32X) {
+            // XXX
+        } else if (type == RELOC_RELATIVE) {
+            *fixup += ztextToXbss;
+            printf("\tRELATIVE reloc @%p fixed up\n", rel->r_offset);
+        } else if (e_machine == EM_ARM) {
+           if (type == R_ARM_GOTPC) {
+               // B(S) + A - P
+               if (!looks_like_code_address(symval)) {
+                   printf("\tR_ARM_BASE_PREL reloc @%p fixed up\n", rel->r_offset);
+                   *fixup -= ztextToXbss;
+               }
+            } else if (type == R_ARM_ABS32) {
+                // S + A
                 if (looks_like_code_address(symval)) {
-                    printf("\tGOTOFF relocation @%p concerns code addr %p\n", rel->r_offset, symbols[symbol].st_value);
+                    printf("\tR_ARM_ABS32 relocation @%p concerns code addr %p\n", rel->r_offset, symbols[symbol].st_value);
                     *fixup += ztextToXbss;
                 }
-                break;
-            case R_386_PLT32:
-                //  L + A - P  (L is .plt)
-                // Nothing to do, both L and P move so it's fine
-                break;
-            case R_386_GOT32X:
-                // XXX
-                break;
-            case R_386_RELATIVE:
-                *fixup += ztextToXbss;
-                printf("\tRELATIVE reloc @%p fixed up\n", rel->r_offset);
 
-                break;
-            default:
-                ;
-        };
+            } 
+        }
+/*
+000090b4  0000591a R_ARM_GOT_BREL    00000000   __gmon_start__
+GOT(S) + A - GOT_ORG
+no change
+
+00009080  0000571c R_ARM_CALL        0000902c   __libc_start_main@@GLI
+00009084  0000541c R_ARM_CALL        00009020   abort@@GLIBC_2.4
+0000911c  0000661c R_ARM_CALL        00009044   puts@@GLIBC_2.4
+00009124  00006d1c R_ARM_CALL        00009050   exit@@GLIBC_2.4
+((S + A) | T) - P
+no change
+
+
+00009088  00005502 R_ARM_ABS32       0000912c   __libc_csu_fini
+0000908c  00006e02 R_ARM_ABS32       00009104   main
+00009090  00006202 R_ARM_ABS32       00009130   __libc_csu_init
+000090d0  00001602 R_ARM_ABS32       00011804   .bss
+000090fc  00001202 R_ARM_ABS32       000116e4   .jcr
+00009100  00005a02 R_ARM_ABS32       00000000   _Jv_RegisterClasses
+00009128  00000c02 R_ARM_ABS32       00009660   .rodata
+S+A
+
+00009190  00004e18 R_ARM_GOTOFF32    000116dc   __init_array_start
+00009194  00004d18 R_ARM_GOTOFF32    000116e0   __init_array_end
+((S + A) | T) - GOT_ORG
+    */
+
+
         rel++;
     }
 
