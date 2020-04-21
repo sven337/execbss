@@ -1,0 +1,39 @@
+This is used for bug https://sourceware.org/bugzilla/show_bug.cgi?id=21718
+Takes "arbitrary" C code and builds it in a way that works in a noexec environment.
+
+A custom linker script is used:
+    - puts all executable code in a non-executable ELF segment, in section .ztext (this includes the PLT!)
+    - creates an executable BSS section .xbss
+    - injects space for a copy relocation from .ztext to xbss
+    - creates a few symbols for the post processing step
+    - forces the entry point to be main, not _start, because I'm lazy
+
+Linking is done with :
+        -E
+       --export-dynamic
+   When creating a dynamically linked executable, using the -E option
+           or the --export-dynamic option causes the linker to add all symbols
+           to the dynamic symbol table.
+
+           (for the .ztext symbol used by the relocation to be available)
+
+        -q
+        --emit-relocs
+           Leave relocation sections and contents in fully linked executables.
+           Post link analysis and optimization tools may need this information
+           in order to perform correct modifications of executables.
+
+          (for post processing of the relocations applied by the linker that need to change due to the code having moved, eg GOTPC GOTOFF RELATIVE)
+
+        -z now
+
+         To avoid external library calls from going to the plt0 entry which, on ARM, has a hardcoded offset to the GOT (bfd/elf32-arm.c:2399).
+         This could be fixed but it's very hard so do not bother, -z now saves us from this.
+
+elfhack.c then does a mandatory post-processing step that consists of:
+
+    - injecting the copy relocation from the _ztext_start_symbol to .xbss
+    - fixing up some relocations in a way I don't want to describe
+
+Run with /lib/ld-linux.so out.elf
+          

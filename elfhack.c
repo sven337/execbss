@@ -13,7 +13,8 @@ Elf32_Shdr *ztextShdr, *xbssShdr, *gotShdr, *dynShdr = NULL;
 Elf32_Shdr *relBssShdr = NULL;
 Elf32_Shdr *relZtextShdr = NULL;
 Elf32_Shdr *relGotShdr, *relDynShdr = NULL;
-Elf32_Sym  *dynsymZtextStart, *symGotPlt;
+Elf32_Sym  *dynsymZtextStart, *symGotPlt, *symPltStart, *symPltEnd;
+Elf32_Shdr *all_sections;
 int ztext_start_symidx;
 int e_machine;
             
@@ -177,6 +178,10 @@ int print_sym_table(uint8_t * filebase, Elf32_Shdr * section, char *strtable)
         } else if (!strcmp(name, "_ztext_start") && section->sh_type == SHT_DYNSYM) {
             dynsymZtextStart = symbols;
             ztext_start_symidx = symbols - (Elf32_Sym *) (filebase + section->sh_offset);
+        } else if (!strcmp(name, "_plt_start")) {
+            symPltStart = symbols;
+        } else if (!strcmp(name, "_plt_end")) {
+            symPltEnd = symbols;
         }
 /*		printf("- Value: 0x%08x\n", symbols->st_value);
 		printf("- Size: 0x%08x\n", symbols->st_size);
@@ -375,6 +380,26 @@ S+A
     }
 
 }
+
+uint32_t arm_encode_addimm(uint32_t encode) {
+    int rotate;
+    for (rotate = 0; rotate < 32; rotate += 2)
+    {
+        // print an encoding if the only significant bits
+        // fit into an 8-bit immediate
+        if (!(encode & ~0xffU))
+        {
+            printf("0x%X%02X\n", rotate/2, encode);
+            return (encode & 0xFF) | (rotate/2)<<8;
+        }
+
+        // rotate left by two
+        encode = (encode << 2) | (encode >> 30);
+    }
+    return 0;
+}
+
+
 int main(int argc, char *argv[])
 {
 	int fd_elf = -1;
@@ -429,6 +454,7 @@ int main(int argc, char *argv[])
 		printf("\n");
 		p_phdr = (Elf32_Phdr *) (p_base + p_ehdr->e_phoff);
 		p_shdr = (Elf32_Shdr *) (p_base + p_ehdr->e_shoff);
+        all_sections = p_shdr;
 		p_strtable =
 		    (char *)(p_base + p_shdr[p_ehdr->e_shstrndx].sh_offset);
 
@@ -487,13 +513,13 @@ int main(int argc, char *argv[])
     }
 
     int32_t zTextToXbss = xbssShdr->sh_addr - ztextShdr->sh_addr;
-    if (relZtextShdr) {
+    if (relZtextShdr && ztextShdr) {
         // Fixup all GOT-involving relocations since the offset between code and GOT is about to change (- .ztext + .xbss)
         printf("Fixing up relocations for .ztext from .rel.ztext\n");
         fixup_relocations_for_section(p_base, relZtextShdr, ztextShdr, zTextToXbss, p_shdr);
     }
 
-    if (relGotShdr) {
+    if (relGotShdr && gotShdr) {
         // The GOT itself has addresses such as the address of main, fix it up
         printf("Fixing up relocations for .got from .rel.got\n");
         fixup_relocations_for_section(p_base, relGotShdr, gotShdr, zTextToXbss, p_shdr);
@@ -503,16 +529,19 @@ int main(int argc, char *argv[])
 
 
     if (symGotPlt) {
-        // Fixup symbols in the PLT
-        printf("Found plt _GLOBAL_OFFSET_TABLE_ @%#x\n", symGotPlt->st_value);
-        int offset = symGotPlt->st_value - ztextShdr->sh_addr; // offset from start of section
-        Elf32_Addr *fixmeup = (Elf32_Addr *)(p_base + ztextShdr->sh_offset + offset);
+        // Fixup symbols in the GOT
+        // Find the section in which the GOT lives
+        Elf32_Shdr *s = &all_sections[symGotPlt->st_shndx];
+        int offset = symGotPlt->st_value - s->sh_addr; // offset from start of section
+        Elf32_Addr *fixmeup = (Elf32_Addr *)(p_base + s->sh_offset + offset);
+        printf("Found plt _GLOBAL_OFFSET_TABLE_ @%#x offse from ztext %#x file offset %#x\n", symGotPlt->st_value, offset, (uint8_t *)fixmeup - p_base);
         fixmeup += 3;
         // now I should be pointing at addresses
         while (1) {
+            printf("Fixmeup GOT value %#x\n", *fixmeup);
             if (looks_like_code_address(*fixmeup)) {
-                printf("Fixing up address at %p value %p to ", (uint8_t *)fixmeup - ztextShdr->sh_offset - p_base + ztextShdr->sh_addr, *fixmeup);
-                *fixmeup = *fixmeup - ztextShdr->sh_addr + xbssShdr->sh_addr;
+                printf("Fixing up address at %p value %p to ", (uint8_t *)fixmeup - s->sh_offset - p_base + s->sh_addr, *fixmeup);
+                *fixmeup = *fixmeup + zTextToXbss;
                 printf("%p\n", *fixmeup);
             } else {
                 break;
@@ -521,6 +550,47 @@ int main(int argc, char *argv[])
         }
 
     }
+
+    /* Fixup entries in the PLT: they do a bunch of PC-relative computations to
+     point to the GOT, but because the PLT (which is executable) is moving,
+     the offset between PLT and GOT changes. x86 doesn't have that problem
+     because the PC-relative part happens in the caller itself, not in the
+     PLT, and the linker properly emits relocations with -q for these. But it
+     doesn't for changes in the PLT, so we have to fix this up manually.
+     Look for :
+         e28fc600        add     ip, pc, #0      ; 0x0
+     in the PLT, and change the immediate value to add zTextToXbss
+     */
+                printf("ztexttobss %x\n", zTextToXbss);
+    if (symPltStart && symPltEnd && e_machine == EM_ARM) {
+        printf("Fixing up plt entries for ARM\n");
+        int offset = symPltStart->st_value - ztextShdr->sh_addr; // offset from start of section
+        uint32_t *fixmeup = (Elf32_Addr *)(p_base + ztextShdr->sh_offset + offset);
+        int nb = (symPltEnd->st_value - symPltStart->st_value) / 4;
+        for (int i = 0; i < nb; i++) {
+/*            https://alisdair.mcdiarmid.org/arm-immediate-value-encoding/
+              ba98 | 76543210
+              rot  | imm*/
+            if (*fixmeup == 0xe28fc600) {
+                // Can't encode a negative immediate value to add     ip, pc, #0 (that I know of, anyway)
+            } else if (((*fixmeup) & 0xFFFFF000) == 0xe28cc000) {
+                printf("Fixing up add     ip, ip, #102400\n");
+                uint8_t imm = *fixmeup & 0xFF;
+                uint8_t rot = (*fixmeup >> 8) & 0xF;
+                uint32_t val=imm >> 2*rot  | imm << (32-2*rot);
+                printf("instr %x was encoding value %x\n", *fixmeup, val);
+                if ((zTextToXbss > (signed)val)) {
+                    fprintf(stderr, "Error: cannot fix up PLT immediate value %#x (need to remove %#x and cannot be negative)\n", val, zTextToXbss);
+                }
+                val -= zTextToXbss;
+                *fixmeup = 0xe28cc000;
+                *fixmeup |= arm_encode_addimm(val);
+            }
+
+            fixmeup++;
+        }
+    }
+
 
     FILE *out = fopen("/tmp/out.elf", "w");
     fwrite(p_base, elf_stat.st_size, 1, out);

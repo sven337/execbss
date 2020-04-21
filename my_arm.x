@@ -9,8 +9,8 @@ PHDRS
   headers PT_PHDR PHDRS ;
   interp PT_INTERP ;
   ztext PT_LOAD FILEHDR PHDRS FLAGS(6);
-  data PT_LOAD;
   xbss PT_LOAD FLAGS(7);
+  data PT_LOAD;
   dynamic PT_DYNAMIC ;
 }
 
@@ -21,7 +21,9 @@ SECTIONS
   .ztext    : {
     _ztext_start = .;
     KEEP (*(.init))
+    _plt_start = .;
     *(.plt) *(.iplt)
+    _plt_end = .;
     *(.text.unlikely .text.*_unlikely .text.unlikely.*)
     *(.text.exit .text.exit.*)
     *(.text.startup .text.startup.*)
@@ -34,6 +36,14 @@ SECTIONS
   PROVIDE (__etext = .);
   PROVIDE (_etext = .);
   PROVIDE (etext = .);
+  
+  . = ALIGN(4096);
+  .xbss :
+      {
+      PROVIDE(_xbss_start = .);
+      . = . + 65536;
+      } :xbss
+
 
   .interp         : { *(.interp) } :data :interp
   .note.gnu.build-id : { *(.note.gnu.build-id) }
@@ -171,13 +181,6 @@ SECTIONS
   __end__ = . ;
   _end = .; PROVIDE (end = .);
   . = DATA_SEGMENT_END (.);
-
-  . = ALIGN(4096);
-  .xbss :
-      {
-      PROVIDE(_xbss_start = .);
-      . = . + 65536;
-      } :xbss
 
   /* Stabs debugging sections.  */
   .stab          0 : { *(.stab) }
