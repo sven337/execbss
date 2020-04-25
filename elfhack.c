@@ -9,14 +9,14 @@
 #include <elf.h>
 #include <unistd.h>
 
-Elf32_Shdr *ztextShdr, *xbssShdr, *gotShdr, *dynShdr = NULL;
+Elf32_Shdr *ztextShdr, *gotShdr, *dynShdr = NULL;
 Elf32_Shdr *relBssShdr = NULL;
 Elf32_Shdr *relZtextShdr = NULL;
 Elf32_Shdr *relGotShdr, *relDynShdr = NULL;
 Elf32_Shdr *initArrayShdr, *finiArrayShdr;
 Elf32_Shdr *relInitArrayShdr, *relFiniArrayShdr;
 Elf32_Sym  *dynsymZtextStart, *symGotPlt, *symPltStart, *symPltEnd;
-int dynamicSectionIndex;
+int dynamicSectionIndex, dynsymSectionIndex, xbssSectionIndex;
 Elf32_Shdr *all_sections;
 int ztext_start_symidx;
 int e_machine;
@@ -261,10 +261,15 @@ int print_section_header(Elf32_Shdr *shdr, uint index, char *strtable, uint8_t *
         ztextShdr = shdr;
     } else if (!strcmp(name, ".rel.bss")) {
         // Found .rel.bss
+        // ... and it has bits that we can overwrite (executable vs. .so, possibly a ld bug)
+        if (shdr->sh_type == SHT_NOBITS) {
+            fprintf(stderr, "Error: found .rel.bss but is SHT_NOBITS, no space to inject a relocation there\n");
+            exit(1);
+        }
         relBssShdr = shdr;
     } else if (!strcmp(name, ".xbss")) {
         // Found .xbss
-        xbssShdr = shdr;
+        xbssSectionIndex = index;
     } else if (!strcmp(name, ".rel.ztext")) {
         relZtextShdr = shdr;
     } else if (!strcmp(name, ".rel.got")) {
@@ -493,8 +498,9 @@ int main(int argc, char *argv[])
 			print_section_header(&p_shdr[i], i, p_strtable, p_base);
             if (p_shdr[i].sh_type == SHT_SYMTAB
                     || p_shdr[i].sh_type == SHT_DYNSYM) {
-                printf
-                    ("This section holds a symbol table...\n");
+                if (p_shdr[i].sh_type == SHT_DYNSYM) {
+                    dynsymSectionIndex = i;
+                }
 
                 //being a symbol table, the field sh_link of the section header
                 //will hold an index into the section table which gives the
@@ -515,9 +521,37 @@ int main(int argc, char *argv[])
     printf("Updating dynsym _ztext_start symbol\n"); //update size and binding type
     dynsymZtextStart->st_info = ELF32_ST_INFO(STB_LOCAL, STT_OBJECT);
     dynsymZtextStart->st_size = ztextShdr->sh_size;
+    Elf32_Shdr *dynsymShdr = &all_sections[dynsymSectionIndex];
+    dynsymShdr->sh_info = 1 + dynsymZtextStart - (Elf32_Sym *)(p_base + dynsymShdr->sh_offset);
+
+    /* 
+       bfd/elflink.c says "ELF requires that all
+	     global symbols follow all local symbols, and that sh_info
+	     point to the first global symbol."
+      we need to make this symbol local, so we need to move it to the top of the list and update sh_info
+      */
+/*    Elf32_Shdr *dynsymShdr = &all_sections[dynsymSectionIndex];
+    Elf32_Sym *sym = (Elf32_Sym *)(p_base + dynsymShdr->sh_offset);
+    while (sym != dynsymZtextStart) { 
+        if (ELF32_ST_TYPE(sym->st_info) != STB_LOCAL) {
+            Elf32_Sym tmp = *sym;
+            memcpy(sym, dynsymZtextStart, sizeof(Elf32_Sym));
+            memcpy(dynsymZtextStart, &tmp, sizeof(Elf32_Sym));
+            break;
+        }
+        sym++;
+    }*/
 
     if (relBssShdr) {
         // Inject a COPY relocation of the ztext_start symbol to .xbss
+        printf("Injecting COPY relocation from .ztext to .xbss\n");
+        relBssShdr->sh_type = SHT_REL;
+        relBssShdr->sh_flags = SHF_ALLOC | SHF_INFO_LINK;
+        relBssShdr->sh_link = dynsymSectionIndex;
+        relBssShdr->sh_info = xbssSectionIndex;
+        relBssShdr->sh_addralign = 4;
+        relBssShdr->sh_entsize = 8;
+
         int sz = 0;
         // Point at the end of the section
         Elf32_Rel *rel = (Elf32_Rel *)(p_base + relBssShdr->sh_offset + relBssShdr->sh_size);
@@ -535,11 +569,14 @@ int main(int argc, char *argv[])
         }
         symtab_index = ztext_start_symidx;
         rel->r_info = ELF32_R_INFO(symtab_index, type);
-        rel->r_offset =  xbssShdr->sh_addr;
+        rel->r_offset =  all_sections[xbssSectionIndex].sh_addr;
         printf("Now reloc type %d symtab index %d\n", type, symtab_index);
+    } else {
+        fprintf(stderr, "Can't find section .rel.bss where to inject the COPY relocation!!!!\n");
+        return 1;
     }
 
-    int32_t zTextToXbss = xbssShdr->sh_addr - ztextShdr->sh_addr;
+    int32_t zTextToXbss = all_sections[xbssSectionIndex].sh_addr - ztextShdr->sh_addr;
     if (relZtextShdr && ztextShdr) {
         // Fixup all GOT-involving relocations since the offset between code and GOT is about to change (- .ztext + .xbss)
         printf("Fixing up relocations for .ztext from .rel.ztext\n");
@@ -552,7 +589,7 @@ int main(int argc, char *argv[])
         fixup_relocations_for_section(p_base, relGotShdr, gotShdr, zTextToXbss, p_shdr);
     }
 
-    // XXX probably also need to do .rel.dyn, but not .rel.data
+    // XXX also need to do .rel.init_array and .rel.fini_array (for starting up in _start instead of main), but not .rel.data
 
     if (relInitArrayShdr && initArrayShdr) {
         printf("Fixing up relocations for .init_array from .rel.init_array\n");
@@ -631,6 +668,23 @@ int main(int argc, char *argv[])
         }
     }
 
+    /* Change entries in .dynamic so it points to the new code address */
+    if (dynamicSectionIndex) {
+        Elf32_Shdr *s = &all_sections[dynamicSectionIndex];
+        Elf32_Dyn *d = (Elf32_Dyn *)(p_base + s->sh_offset);
+        int nb = s->sh_size / sizeof(Elf32_Dyn);
+        for (int i = 0; i < nb; i++, d++) {
+            switch (d->d_tag) {
+                case DT_INIT:
+                case DT_FINI:
+                    // Do not fix them up just kill them XXXX this sucks big time try not to suck so much dude
+//                    d->d_tag = DT_BIND_NOW;
+                    printf("Fixin up DT_INIT/DT_FINI from %p to %p\n", d->d_un.d_ptr ,d->d_un.d_ptr + zTextToXbss);
+                    d->d_un.d_ptr += zTextToXbss;
+                    break;
+            }
+        }
+    }
 
     FILE *out = fopen("/tmp/out.elf", "w");
     fwrite(p_base, elf_stat.st_size, 1, out);
