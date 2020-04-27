@@ -360,7 +360,8 @@ void fixup_relocations_for_section(uint8_t *p_base, Elf32_Shdr *relocs, Elf32_Sh
                    printf("\tR_ARM_BASE_PREL reloc @%p fixed up\n", rel->r_offset);
                    *fixup -= ztextToXbss;
                }
-            } else if (type == R_ARM_ABS32) {
+            } else if (type == R_ARM_ABS32 || type == R_ARM_TARGET1) {
+                // XXX TARGET1 could be REL on some platforms, I'm not sure how to know
                 // S + A
                 if (looks_like_code_address(symval)) {
                     printf("\tR_ARM_ABS32 relocation @%p concerns code addr %p\n", rel->r_offset, symval);
@@ -589,7 +590,7 @@ int main(int argc, char *argv[])
         fixup_relocations_for_section(p_base, relGotShdr, gotShdr, zTextToXbss, p_shdr);
     }
 
-    // XXX also need to do .rel.init_array and .rel.fini_array (for starting up in _start instead of main), but not .rel.data
+    // XXX rel.data is also needed, because it can contain function pointers (e.g. elfutils' blkid). .rel.data
 
     if (relInitArrayShdr && initArrayShdr) {
         printf("Fixing up relocations for .init_array from .rel.init_array\n");

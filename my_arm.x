@@ -41,7 +41,7 @@ SECTIONS
   .xbss :
       {
       PROVIDE(_xbss_start = .);
-      . = . + 65536;
+      . = . + 0x50000;
       } :xbss
 
 
@@ -221,5 +221,5 @@ SECTIONS
   .gnu.attributes 0 : { KEEP (*(.gnu.attributes)) }
   .note.gnu.arm.ident 0 : { KEEP (*(.note.gnu.arm.ident)) }
   /DISCARD/ : { *(.note.GNU-stack) *(.gnu_debuglink) }
-  _start_in_xbss = main + _xbss_start - _ztext_start;
+  _start_in_xbss = _start  + _xbss_start - _ztext_start;
 }
