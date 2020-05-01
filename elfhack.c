@@ -12,8 +12,8 @@
 Elf32_Shdr *ztextShdr, *gotShdr, *dynShdr = NULL;
 Elf32_Shdr *relBssShdr = NULL;
 Elf32_Shdr *relZtextShdr = NULL;
-Elf32_Shdr *relGotShdr, *relDynShdr = NULL;
-Elf32_Shdr *initArrayShdr, *finiArrayShdr;
+Elf32_Shdr *relGotShdr, *relDynShdr, *relDataShdr;
+Elf32_Shdr *initArrayShdr, *finiArrayShdr, *dataShdr;
 Elf32_Shdr *relInitArrayShdr, *relFiniArrayShdr;
 Elf32_Sym  *dynsymZtextStart, *symGotPlt, *symPltStart, *symPltEnd;
 int dynamicSectionIndex, dynsymSectionIndex, xbssSectionIndex;
@@ -284,6 +284,10 @@ int print_section_header(Elf32_Shdr *shdr, uint index, char *strtable, uint8_t *
         relInitArrayShdr = shdr;
     } else if (!strcmp(name, ".rel.fini_array")) {
         relFiniArrayShdr = shdr;
+    } else if (!strcmp(name, ".data")) {
+        dataShdr = shdr;
+    } else if (!strcmp(name, ".rel.data")) {
+        relDataShdr = shdr;
     }
 
     if(shdr->sh_type <= 11)
@@ -591,6 +595,10 @@ int main(int argc, char *argv[])
     }
 
     // XXX rel.data is also needed, because it can contain function pointers (e.g. elfutils' blkid). .rel.data
+    if (relDataShdr && dataShdr) {
+        printf("Fixing up relocations for .data from .rel.data\n");
+        fixup_relocations_for_section(p_base, relDataShdr, dataShdr, zTextToXbss, p_shdr);
+    }
 
     if (relInitArrayShdr && initArrayShdr) {
         printf("Fixing up relocations for .init_array from .rel.init_array\n");
