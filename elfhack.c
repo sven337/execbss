@@ -653,12 +653,13 @@ int main(int argc, char *argv[])
         int offset = symPltStart->st_value - ztextShdr->sh_addr; // offset from start of section
         uint32_t *fixmeup = (Elf32_Addr *)(p_base + ztextShdr->sh_offset + offset);
         int nb = (symPltEnd->st_value - symPltStart->st_value) / 4;
-        for (int i = 0; i < nb; i++) {
+        for (int i = 0; i < nb; i++, fixmeup++) {
 /*            https://alisdair.mcdiarmid.org/arm-immediate-value-encoding/
               ba98 | 76543210
               rot  | imm*/
             if (*fixmeup == 0xe28fc600) {
                 // Can't encode a negative immediate value to add     ip, pc, #0 (that I know of, anyway)
+                fprintf(stderr, "Error: cannot fix up PLT entry add     ip, pc, #0 because I do not know how to add a negative value\n");
             } else if (((*fixmeup) & 0xFFFFF000) == 0xe28cc000) {
                 printf("Fixing up add     ip, ip, #102400\n");
                 uint8_t imm = *fixmeup & 0xFF;
@@ -666,15 +667,16 @@ int main(int argc, char *argv[])
                 uint32_t val=imm >> 2*rot  | imm << (32-2*rot);
                 printf("instr %x was encoding value %x\n", *fixmeup, val);
                 if ((zTextToXbss > (signed)val)) {
-                    fprintf(stderr, "Error: cannot fix up PLT immediate value %#x (need to remove %#x and cannot be negative)\n", val, zTextToXbss);
+                    printf("Warning: cannot fix up PLT immediate value %#x (need to remove %#x and cannot be negative), changing instruction to sub\n", val, zTextToXbss);
+                    *fixmeup = 0xe24cc000;
+                    *fixmeup |= arm_encode_addimm(zTextToXbss - val);
+                    continue;
                 }
                 val -= zTextToXbss;
                 *fixmeup = 0xe28cc000;
                 *fixmeup |= arm_encode_addimm(val);
             }
-
-            fixmeup++;
-        }
+        
     }
 
     /* Change entries in .dynamic so it points to the new code address */
