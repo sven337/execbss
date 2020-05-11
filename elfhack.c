@@ -12,8 +12,8 @@
 Elf32_Shdr *ztextShdr, *gotShdr, *dynShdr = NULL;
 Elf32_Shdr *relBssShdr = NULL;
 Elf32_Shdr *relZtextShdr = NULL;
-Elf32_Shdr *relGotShdr, *relDynShdr, *relDataShdr;
-Elf32_Shdr *initArrayShdr, *finiArrayShdr, *dataShdr;
+Elf32_Shdr *relGotShdr, *relDynShdr, *relDataShdr, *relRoDataShdr;
+Elf32_Shdr *initArrayShdr, *finiArrayShdr, *dataShdr, *roDataShdr;
 Elf32_Shdr *relInitArrayShdr, *relFiniArrayShdr;
 Elf32_Sym  *dynsymZtextStart, *symGotPlt, *symPltStart, *symPltEnd;
 int dynamicSectionIndex, dynsymSectionIndex, xbssSectionIndex;
@@ -286,8 +286,12 @@ int print_section_header(Elf32_Shdr *shdr, uint index, char *strtable, uint8_t *
         relFiniArrayShdr = shdr;
     } else if (!strcmp(name, ".data")) {
         dataShdr = shdr;
+    } else if (!strcmp(name, ".rodata")) {
+        roDataShdr = shdr;
     } else if (!strcmp(name, ".rel.data")) {
         relDataShdr = shdr;
+    } else if (!strcmp(name, ".rel.rodata")) {
+        relRoDataShdr = shdr;
     }
 
     if(shdr->sh_type <= 11)
@@ -599,6 +603,11 @@ int main(int argc, char *argv[])
         printf("Fixing up relocations for .data from .rel.data\n");
         fixup_relocations_for_section(p_base, relDataShdr, dataShdr, zTextToXbss, p_shdr);
     }
+    
+    if (relRoDataShdr && roDataShdr) {
+        printf("Fixing up relocations for .rodata from .rel.rodata\n");
+        fixup_relocations_for_section(p_base, relRoDataShdr, roDataShdr, zTextToXbss, p_shdr);
+    }
 
     if (relInitArrayShdr && initArrayShdr) {
         printf("Fixing up relocations for .init_array from .rel.init_array\n");
@@ -676,6 +685,7 @@ int main(int argc, char *argv[])
                 *fixmeup = 0xe28cc000;
                 *fixmeup |= arm_encode_addimm(val);
             }
+        }
         
     }
 
